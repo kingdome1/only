@@ -1,0 +1,218 @@
+Shader "Unlit/Water 1"
+{
+    Properties
+    {
+        [Header(Common)]
+        _Water01("Direction(xy) Speed(Z) Dirstort(W)", vector) = (1,1,0.1,0.05)
+        _Water02("Atten(X) Lightness(Y) Caustic(Z)", vector) = (1,1,0.1,0.05)
+        _Water03("Specular: Distort(X) Intensity(Y) Smoothness(Z)",vector) = (0.8,5,8,0)
+        _Water04("FoamRange(X) FoamNoise(Y)",vector) = (5,2.8,0,0)
+        
+        [Header(Color)]
+        _WaterColor1("Water Color",color) = (1,1,1,1)
+        _WaterColor2("Water Color",color) = (1,1,1,1)
+      
+        [Header(Normal)]
+        _NormalTex("NormalTex",2D) = "white"{}
+        
+        [Header(Specular)]
+        _SpecularColor("SpecularColor",color) = (1,1,1,1)
+        
+        [Header(Reflection)]
+        _ReflectionTex("ReflectionTex",Cube) = "white"{}
+        
+        [Header(Caustic)]
+        _CausticTex ("CausticTex",2D) = "white"{}
+        
+        [Header(Foam)]
+        _FoamTex("FoamTex",2D) = "white"{}
+        _FoamColor("FoamColor",color) = (1,1,1,1)
+
+    }
+    SubShader
+    {
+        Tags { 
+            "RenderPipeline"="UniversalPipeline"
+            "RenderType"="Transparent"
+            "Queue"="Transparent"
+            "IgnoreProjector"="ture"
+            
+            
+             }
+        LOD 100
+
+        Pass
+        {
+            Name"Unlit"
+            HLSLPROGRAM
+            #pragma vertex vert
+            #pragma fragment frag
+            #pragma prefer_hlslcc gles
+            #pragma exclude_renderers d3d11_9x
+           
+            #include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Color.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+            #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Lighting.hlsl"
+            
+
+            struct Attributes
+            {
+                float4 positionOS : POSITION;
+                float2 uv : TEXCOORD0;
+                float3 normalOS : NORMAL;
+                
+            };
+
+            struct Varyings
+            {
+                float4 positionCS : SV_POSITION;
+                float4 uv : TEXCOORD0;
+                float3 positionVS : TEXCOORD1;
+                float3 positionWS : TEXCOORD2;
+                float4 normalUV : TEXCOORD3;
+                float3 normalWS : TEXCOORD4;
+                float2 timeOffset : TEXCOORD5;
+               
+            };
+
+
+            CBUFFER_START(UnityperMaterial)
+            float4 _Water01,_Water02,_Water03,_Water04;
+            half4 _WaterColor1,_WaterColor2;
+            float4 _FoamTex_ST;
+            float4 _NormalTex_ST;
+            half4 _SpecularColor;
+            float4 _CausticTex_ST;
+            half4 _FoamColor;
+            
+              
+            CBUFFER_END
+            TEXTURE2D(_NormalTex);SAMPLER(sampler_NormalTex);
+            TEXTURE2D(_FoamTex);SAMPLER(sampler_FoamTex);
+            TEXTURE2D(_CausticTex);SAMPLER(sampler_CausticTex);
+            TEXTURECUBE(_ReflectionTex);SAMPLER(sampler_ReflectionTex);
+            TEXTURE2D(_RampTexture);SAMPLER(sampler_RampTexture);
+            TEXTURE2D(_CameraDepthTexture);SAMPLER(sampler_CameraDepthTexture);
+            TEXTURE2D(_CameraOpaqueTexture);SAMPLER(sampler_CameraOpaqueTexture);
+            
+
+            
+            Varyings vert (Attributes v)
+            {
+               Varyings o = (Varyings)0;
+                o.positionWS = TransformObjectToWorld(v.positionOS);
+                o.positionVS = TransformWorldToView(o.positionWS);
+                o.positionCS = TransformObjectToHClip(v.positionOS.xyz);
+                o.timeOffset = _Time.y * _Water01.z * _Water01.xy;
+                o.uv.xy = o.positionWS.xz * _FoamTex_ST.xy +  o.timeOffset;
+                o.normalUV.xy = TRANSFORM_TEX(v.uv,_NormalTex) + o.timeOffset ;
+                o.normalUV.zw = TRANSFORM_TEX(v.uv,_NormalTex) + o.timeOffset * float2(-1.07,1.13);
+                o.normalWS = TransformObjectToWorldNormal(v.normalOS);
+                
+                return o;
+            }
+
+            half4 frag (Varyings i) : SV_Target
+            {
+
+                float distort = _Water01.w;
+                float atten = _Water02.x;
+                float lightness = _Water02.y;
+                float causticIntensity = _Water02.z;
+                float specularDistort = _Water03.x;
+                float specularIntensity = _Water03.y;
+                float specularSmoothness = _Water04.y;
+                float foamRange = _Water04.x;
+                float foamNoise = _Water04.y;
+                //屏幕空间下的UV坐标
+                float2 screenUV = i.positionCS.xy/_ScreenParams.xy;
+
+                //水的深度
+                half depthTex = SAMPLE_TEXTURE2D(_CameraDepthTexture,sampler_CameraDepthTexture,screenUV).r;
+                half depthSce = LinearEyeDepth(depthTex,_ZBufferParams);
+                half depthWater = depthSce + i.positionVS.z;
+                depthWater *= atten;
+
+               
+
+                //法线
+                half4 normalTex01 = SAMPLE_TEXTURE2D(_NormalTex,sampler_NormalTex,i.normalUV.xy);
+                half4 normalTex02 = SAMPLE_TEXTURE2D(_NormalTex,sampler_NormalTex,i.normalUV.zw);
+                half4 normalTex = normalTex01*normalTex02;
+                half3 noraml = normalTex.xyz * distort;
+
+                // //水的扭曲
+                // half normalTex = SAMPLE_TEXTURE2D(_NormalTex,sampler_NormalTex,i.uv.zw);
+                // float2 distortUV = lerp(screenUV,normalTex,_Distort);
+                // half4 opaqueTex = SAMPLE_TEXTURE2D(_CameraOpaqueTexture,sampler_CameraOpaqueTexture,distortUV);
+
+                 //水下扭曲
+                 float2 distortUV = screenUV + noraml.xy;
+                 half depthDistortTex = SAMPLE_TEXTURE2D(_CameraDepthTexture,sampler_CameraDepthTexture,distortUV).r;
+                 half depthDistortSce = LinearEyeDepth(depthDistortTex,_ZBufferParams);
+                 half depthDistortWater = depthDistortSce + i.positionVS.z;
+                
+                 float2 opaqueUV = distortUV;
+                 if(depthDistortWater<0)opaqueUV = screenUV;
+                 half4 opaqueTex = SAMPLE_TEXTURE2D(_CameraOpaqueTexture,sampler_CameraOpaqueTexture,opaqueUV);
+
+                //水的焦散
+                float4 depthVS = 1;
+                depthVS.xy = i.positionVS.xy * depthDistortSce / -i.positionVS.z;
+                depthVS.z = depthDistortSce;
+                float3 depthWS = mul(unity_CameraToWorld,depthVS);
+                float2 causticUV01 = depthWS.xz * _CausticTex_ST.xy + depthWS.y * 0.2 +  i.timeOffset;
+                half4 causticTex01 =  SAMPLE_TEXTURE2D(_CausticTex,sampler_CausticTex,causticUV01);
+                float2 causticUV02 = depthWS.xz * _CausticTex_ST.xy + depthWS.y * 0.1 +  i.timeOffset * float2(-1.07,1.43);
+                half4 causticTex02 =  SAMPLE_TEXTURE2D(_CausticTex,sampler_CausticTex,causticUV02);
+                half4 caustic = min(causticTex01,causticTex02);
+                caustic *= causticIntensity;
+                
+
+                //水的高光
+                 half3 N= lerp(normalize(i.normalWS),normalTex.xyz,specularDistort);
+                 Light light = GetMainLight();
+                 half3 L = light.direction;
+                 half3 V = normalize(_WorldSpaceCameraPos.xyz - i.positionWS.xyz);
+                 half3 H = normalize(L + V);
+                 half4 specularTex = _SpecularColor * specularIntensity * pow(saturate(dot(N,H)),specularSmoothness);
+                
+                
+                
+                //水的反射
+                half3 reflectionUV = reflect(-V,N);
+                half4 reflectionTex = SAMPLE_TEXTURECUBE(_ReflectionTex,sampler_ReflectionTex,reflectionUV);
+                half fresnel = pow(saturate(dot(N,V)),3);
+                half4 reflection = reflectionTex * fresnel;
+                // return reflectionTex;
+
+                //水的泡沫
+                half foamWidth = depthWater * foamRange;
+                half foamTex = SAMPLE_TEXTURE2D(_FoamTex,sampler_FoamTex,i.uv.xy).r;
+                foamTex = pow(abs(foamTex),foamNoise);
+                half foamMask = step(foamWidth,foamTex);//如果a<=b返回1,否则返回0.
+                half4 foam = foamMask * _FoamColor;
+
+
+                half4 c = half4 (0,0,0,1);
+                
+                 //水的颜色
+                half4 rampTex01 = SAMPLE_TEXTURE2D(_RampTexture,sampler_RampTexture,float2(depthWater,1));
+            
+
+                
+                c += rampTex01 * lightness;
+                c +=specularTex * reflection;
+                c +=foam;
+                
+                half4 rampTex02 = SAMPLE_TEXTURE2D(_RampTexture,sampler_RampTexture,float2(depthWater,0));
+                c += (opaqueTex + caustic * lightness)*rampTex02;
+                
+                
+                
+                return c;
+            }
+            ENDHLSL
+        }
+    }
+}
